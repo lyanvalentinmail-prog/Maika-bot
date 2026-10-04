@@ -1,0 +1,26 @@
+{
+  "name": "maika-bot",
+  "version": "1.0.0",
+  "description": "─── ׁ ׅ 𝐌ᴀɪᴋᴀ - Bot de WhatsApp con Baileys para Termux (QR + Pairing Code) 𐔌՞ ܸ.ˬ.ܸ՞𐦯",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": [
+    "whatsapp",
+    "bot",
+    "baileys",
+    "termux",
+    "maika"
+  ],
+  "author": "Lyan",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.9",
+    "pino": "^9.5.0",
+    "qrcode-terminal": "^0.12.0"
+  }
+}
