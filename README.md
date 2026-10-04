@@ -59,6 +59,53 @@ Al iniciar por primera vez el bot pregunta:
 La sesión se guarda en la carpeta `session/`, así que solo necesitas
 vincular una vez. Para cerrar sesión borra esa carpeta: `rm -rf session`.
 
+## ✎ Estructura del proyecto
+
+```
+Maika-bot/
+├── index.js            # arranque y conexión con WhatsApp (Baileys)
+├── handler.js          # carga los plugins de /cmds y despacha los comandos
+├── menu.js             # texto del menú (#menu)
+├── settings.js         # configuración del bot
+├── lib/
+│   ├── message.js       # utilidades para leer el mensaje (texto, menciones, citado)
+│   └── utils.js          # fetch helpers, conversión gif→mp4, llamadas a IA
+└── cmds/                # ✎ AQUÍ VIVEN TODOS LOS PLUGINS/COMANDOS
+    ├── menu.js
+    ├── ping.js
+    ├── owner.js
+    ├── anime-reacciones.js   # #peek #hug #kiss #pat #slap #poke
+    ├── chatgpt.js
+    ├── gemini.js
+    └── imagine.js
+```
+
+### Cómo crear un comando nuevo
+
+Cada archivo dentro de `cmds/` exporta un objeto "plugin". No hay que tocar
+`handler.js`: basta con crear el archivo y el bot lo carga solo al iniciar.
+
+```js
+// cmds/saludo.js
+module.exports = {
+  name: 'saludo',           // comando principal: #saludo
+  aliases: ['hola'],        // alias opcionales: #hola
+  category: 'general',      // solo informativo, para organizar
+  description: 'Saluda a quien escriba el comando',
+
+  async execute(ctx) {
+    // ctx incluye: sock, msg, jid, sender, command, args, text,
+    //              settings, reply(contenido), react(emoji)
+    await ctx.react('👋')
+    return ctx.reply('¡Hola! 👋')
+  },
+}
+```
+
+> ✎ Si necesitas lógica compartida entre varios comandos (como las
+> peticiones HTTP o la conversión de gifs), agrégala en `lib/` y
+> impórtala desde tu plugin con `require('../lib/utils')`.
+
 ## ✎ Configuración
 
 Edita `settings.js` para personalizar:

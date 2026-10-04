@@ -1,95 +1,62 @@
 /**
  * Manejador de comandos de Maika-Bot.
  * Prefijos aceptados: # . / !
+ *
+ * Los comandos reales viven como "plugins" en la carpeta /cmds.
+ * Este archivo solo se encarga de:
+ *   1. Cargar todos los plugins de /cmds.
+ *   2. Leer el mensaje entrante y detectar el comando + argumentos.
+ *   3. Armar el "ctx" (contexto) y ejecutar el plugin correspondiente.
  */
 
-const { exec } = require('child_process')
 const fs = require('fs')
-const os = require('os')
 const path = require('path')
 const settings = require('./settings')
-const { buildMenu } = require('./menu')
+const { getBody } = require('./lib/message')
 
 const PREFIX_REGEX = /^[#./!]/
+const CMDS_DIR = path.join(__dirname, 'cmds')
 
-// Reacciones de anime (API: nekos.best)
-const REACTIONS = {
-  peek: { accion: 'está espiando a', solo: 'está espiando... 👀' },
-  hug: { accion: 'abrazó a', solo: 'quiere un abrazo 🤗' },
-  kiss: { accion: 'besó a', solo: 'lanza un besito 😘' },
-  pat: { accion: 'acarició a', solo: 'quiere caricias ✋' },
-  slap: { accion: 'le dio una cachetada a', solo: 'reparte cachetadas 👋' },
-  poke: { accion: 'está molestando a', solo: 'anda molestando 👉' },
-}
+// name/alias (en minúsculas) → plugin
+const commands = new Map()
 
-// ─── utilidades ──────────────────────────────────────────────────
+function loadCommands() {
+  commands.clear()
 
-function getBody(msg) {
-  const m = msg.message
-  if (!m) return ''
-  return (
-    m.conversation ||
-    m.extendedTextMessage?.text ||
-    m.imageMessage?.caption ||
-    m.videoMessage?.caption ||
-    m.documentWithCaptionMessage?.message?.documentMessage?.caption ||
-    ''
-  )
-}
-
-function getMentions(msg) {
-  return msg.message?.extendedTextMessage?.contextInfo?.mentionedJid || []
-}
-
-function getQuotedParticipant(msg) {
-  return msg.message?.extendedTextMessage?.contextInfo?.participant || null
-}
-
-async function fetchJson(url) {
-  const res = await fetch(url, { headers: { accept: 'application/json' } })
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  return res.json()
-}
-
-async function fetchBuffer(url) {
-  const res = await fetch(url)
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  return Buffer.from(await res.arrayBuffer())
-}
-
-// Convierte un GIF a MP4 con ffmpeg (necesario para que WhatsApp lo anime)
-function gifToMp4(gifBuffer) {
-  return new Promise((resolve, reject) => {
-    const base = path.join(os.tmpdir(), `maika-${Date.now()}`)
-    const input = `${base}.gif`
-    const output = `${base}.mp4`
-    fs.writeFileSync(input, gifBuffer)
-    const cmd = `ffmpeg -y -i "${input}" -movflags faststart -pix_fmt yuv420p -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" "${output}"`
-    exec(cmd, (err) => {
-      try { fs.unlinkSync(input) } catch {}
-      if (err) return reject(err)
-      try {
-        const buf = fs.readFileSync(output)
-        fs.unlinkSync(output)
-        resolve(buf)
-      } catch (e) {
-        reject(e)
-      }
-    })
-  })
-}
-
-async function askAI(prompt, model) {
-  const url = `https://text.pollinations.ai/${encodeURIComponent(prompt)}?model=${model}`
-  const res = await fetch(url)
-  if (!res.ok) {
-    // reintento sin modelo específico
-    const res2 = await fetch(`https://text.pollinations.ai/${encodeURIComponent(prompt)}`)
-    if (!res2.ok) throw new Error(`HTTP ${res2.status}`)
-    return res2.text()
+  if (!fs.existsSync(CMDS_DIR)) {
+    console.warn(`✖ No existe la carpeta de comandos: ${CMDS_DIR}`)
+    return
   }
-  return res.text()
+
+  const files = fs.readdirSync(CMDS_DIR).filter((f) => f.endsWith('.js'))
+
+  for (const file of files) {
+    const fullPath = path.join(CMDS_DIR, file)
+    try {
+      delete require.cache[require.resolve(fullPath)]
+      const plugin = require(fullPath)
+
+      if (!plugin?.name || typeof plugin.execute !== 'function') {
+        console.warn(`✖ Plugin inválido (sin "name" o "execute"): ${file}`)
+        continue
+      }
+
+      const names = [plugin.name, ...(plugin.aliases || [])].map((n) => n.toLowerCase())
+      for (const n of names) {
+        if (commands.has(n)) {
+          console.warn(`✖ Comando duplicado "${n}" en ${file} (ya definido en otro plugin)`)
+        }
+        commands.set(n, plugin)
+      }
+    } catch (e) {
+      console.error(`✖ Error cargando el plugin ${file}:`, e?.message || e)
+    }
+  }
+
+  console.log(`✎ ${files.length} plugin(s) cargado(s) desde /cmds (${commands.size} comandos registrados)`)
 }
+
+loadCommands()
 
 // ─── handler principal ───────────────────────────────────────────
 
@@ -106,6 +73,8 @@ module.exports = async function handler(sock, msg) {
   const command = (args.shift() || '').toLowerCase()
   const text = args.join(' ')
 
+  if (!command) return
+
   const reply = (content) =>
     sock.sendMessage(jid, typeof content === 'string' ? { text: content } : content, { quoted: msg })
 
@@ -114,110 +83,33 @@ module.exports = async function handler(sock, msg) {
 
   console.log(`✎ [CMD] ${command} ← ${sender.split('@')[0]}`)
 
-  // ── MENÚ ──
-  if (['menu', 'menú', 'help', 'ayuda', 'comandos'].includes(command)) {
-    await react('📜')
-    return reply(buildMenu())
-  }
+  const plugin = commands.get(command)
 
-  // ── PING ──
-  if (command === 'ping') {
-    await react('⚡')
-    return reply('─── ׁ ׅ  🏓 *Pong!* El bot está activo  𐔌՞ ܸ.ˬ.ܸ՞𐦯')
-  }
-
-  // ── OWNER ──
-  if (['owner', 'creador', 'dueño'].includes(command)) {
-    await react('👑')
-    return reply(
-      `─── ׁ ׅ  👑 *Owner*  𐔌՞ ܸ.ˬ.ܸ՞𐦯\n\n❀ ${settings.ownerName}\n❀ wa.me/${settings.ownerNumber}`
-    )
-  }
-
-  // ── REACCIONES DE ANIME ──
-  if (REACTIONS[command]) {
-    await react('❀')
-    const info = REACTIONS[command]
-    const mentions = getMentions(msg)
-    const quoted = getQuotedParticipant(msg)
-    const target = mentions[0] || quoted
-
-    const who = `@${sender.split('@')[0]}`
-    const caption = target
-      ? `❀ ${who} ${info.accion} @${target.split('@')[0]}  ₍ᐢ.  ̫.ᐢ₎`
-      : `❀ ${who} ${info.solo}`
-    const mentionList = target ? [sender, target] : [sender]
-
-    try {
-      const data = await fetchJson(`https://nekos.best/api/v2/${command}`)
-      const gifUrl = data?.results?.[0]?.url
-      if (!gifUrl) throw new Error('sin resultados')
-      const gifBuffer = await fetchBuffer(gifUrl)
-
-      try {
-        const mp4 = await gifToMp4(gifBuffer)
-        return await sock.sendMessage(
-          jid,
-          { video: mp4, gifPlayback: true, caption, mentions: mentionList },
-          { quoted: msg }
-        )
-      } catch {
-        // sin ffmpeg: enviar como imagen estática
-        return await sock.sendMessage(
-          jid,
-          { image: gifBuffer, caption: `${caption}\n\n> ✎ instala ffmpeg para ver el gif animado`, mentions: mentionList },
-          { quoted: msg }
-        )
-      }
-    } catch (e) {
-      return reply(`✖ No pude obtener la reacción *${command}*. Intenta de nuevo. (${e.message})`)
-    }
-  }
-
-  // ── IA: CHATGPT ──
-  if (['chatgpt', 'gpt', 'ia', 'ai'].includes(command)) {
-    if (!text) return reply(`✎ Uso: *${settings.prefix}chatgpt* <tu pregunta>\n\n> Ejemplo: ${settings.prefix}chatgpt ¿qué es un agujero negro?`)
-    await react('🤖')
-    try {
-      const answer = await askAI(text, 'openai')
-      return reply(`•  ≽(˵◝ ⩊  ◜˵ マ≼ \`𝐂𝐡𝐚𝐭𝐆𝐏𝐓\`  ᰨᰍ\n\n${answer.trim()}`)
-    } catch (e) {
-      return reply(`✖ La IA no respondió. Intenta de nuevo. (${e.message})`)
-    }
-  }
-
-  // ── IA: GEMINI ──
-  if (command === 'gemini') {
-    if (!text) return reply(`✎ Uso: *${settings.prefix}gemini* <tu pregunta>\n\n> Ejemplo: ${settings.prefix}gemini escribe un poema corto`)
-    await react('✨')
-    try {
-      const answer = await askAI(text, 'gemini')
-      return reply(`•  ≽(˵◝ ⩊  ◜˵ マ≼ \`𝐆𝐞𝐦𝐢𝐧𝐢\`  ᰨᰍ\n\n${answer.trim()}`)
-    } catch (e) {
-      return reply(`✖ La IA no respondió. Intenta de nuevo. (${e.message})`)
-    }
-  }
-
-  // ── IA: IMAGINE (texto → imagen) ──
-  if (['imagine', 'imagina', 'img'].includes(command)) {
-    if (!text) return reply(`✎ Uso: *${settings.prefix}imagine* <descripción>\n\n> Ejemplo: ${settings.prefix}imagine un gato samurái estilo anime`)
-    await react('🎨')
-    await reply('✎ ᴄʀᴇᴀɴᴅᴏ ᴛᴜ ɪᴍᴀɢᴇɴ... 𐔌՞ ܸ.ˬ.ܸ՞𐦯')
-    try {
-      const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(text)}?width=1024&height=1024&nologo=true`
-      const image = await fetchBuffer(url)
-      return await sock.sendMessage(
-        jid,
-        { image, caption: `❀ \`𝐈𝐦𝐚𝐠𝐢𝐧𝐞\`  ᰨᰍ\n\n> ✎ ${text}` },
-        { quoted: msg }
-      )
-    } catch (e) {
-      return reply(`✖ No pude generar la imagen. Intenta de nuevo. (${e.message})`)
-    }
-  }
-
-  // ── comando no encontrado ──
-  if (command) {
+  if (!plugin) {
     return reply(`✖ El comando *${settings.prefix}${command}* no existe.\n\n> ✎ Usa *${settings.prefix}menu* para ver la lista de comandos.`)
   }
+
+  const ctx = {
+    sock,
+    msg,
+    jid,
+    sender,
+    body,
+    command,
+    args,
+    text,
+    settings,
+    reply,
+    react,
+  }
+
+  try {
+    return await plugin.execute(ctx)
+  } catch (e) {
+    console.error(`✖ Error ejecutando el comando "${command}":`, e?.message || e)
+    return reply(`✖ Ocurrió un error ejecutando *${settings.prefix}${command}*. (${e.message})`)
+  }
 }
+
+module.exports.commands = commands
+module.exports.reload = loadCommands
